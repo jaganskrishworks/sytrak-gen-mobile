@@ -19,6 +19,14 @@ void main() {
     expect(QrData.parse('hello').isSyTrak, isFalse);
   });
 
+  test('verify request matches only the right sticker', () {
+    final req = VerifyRequest.fromJson({'mac': 'E9:EB:A0:ED:7C:7C', 'seq': '0001', 'device_type': 'UWB-K4W'});
+    expect(req.mac, 'E9EBA0ED7C7C');
+    expect(req.matches(QrData.parse('E9EBA0ED7C7C')), isTrue);
+    expect(req.matches(QrData.parse('E9EBA0ED7C7D')), isFalse);
+    expect(req.matches(QrData.parse('hello')), isFalse);
+  });
+
   test('parses a discovery beacon', () {
     final s = Station.fromBeacon(
         '{"type":"sytrak-gen","v":1,"station":"SG-PC1","name":"Line 1","mqtt_port":1883,"auth":false,"paired":""}', '192.168.1.5');

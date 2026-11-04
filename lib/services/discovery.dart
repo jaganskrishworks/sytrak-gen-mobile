@@ -30,18 +30,30 @@ class StationDiscovery extends ChangeNotifier {
   Future<void> start() async {
     if (_socket != null) return;
     try {
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port, reuseAddress: true);
-    } on SocketException {
-      // Port busy: still works for replies to our own requests.
-      _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      try {
+        _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port, reuseAddress: true);
+      } on SocketException {
+        // Port busy: still works for replies to our own requests.
+        _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      }
+    } on SocketException catch (e) {
+      error = 'Network unavailable - check Wi-Fi (${e.osError?.message ?? e.message})';
+      notifyListeners();
+      return;
     }
     _socket!
       ..broadcastEnabled = true
-      ..listen((event) {
-        if (event != RawSocketEvent.read) return;
-        final dg = _socket?.receive();
-        if (dg != null) _onDatagram(dg);
-      });
+      ..listen(
+        (event) {
+          if (event != RawSocketEvent.read) return;
+          final dg = _socket?.receive();
+          if (dg != null) _onDatagram(dg);
+        },
+        onError: (Object e) {
+          error = 'Network error - pull down to retry';
+          notifyListeners();
+        },
+      );
     probe();
     _timer = Timer.periodic(const Duration(seconds: 3), (_) {
       probe();
@@ -62,26 +74,76 @@ class StationDiscovery extends ChangeNotifier {
     super.dispose();
   }
 
-  /// Sends a discovery request (broadcast + every manual host).
-  void probe() {
-    final request = utf8.encode('SYTRAK_DISCOVER');
-    var sent = false;
-    try {
-      sent = (_socket?.send(request, InternetAddress('255.255.255.255'), port) ?? 0) > 0;
-    } on SocketException {
-      sent = false;
+  /// Sends a discovery request: limited broadcast, a directed broadcast and
+  /// (until a station answers) a unicast sweep of each local Wi-Fi /24, plus
+  /// every manual host.
+  ///
+  /// The directed broadcast and sweep matter on Android: when the Wi-Fi has no
+  /// internet the OS routes 255.255.255.255 over mobile data, where the send
+  /// fails with EPERM. Subnet addresses still route over the Wi-Fi interface.
+  Future<void> probe() async {
+    if (_socket == null) {
+      await start(); // bind failed earlier (e.g. no Wi-Fi) - retry
+      return;
     }
-    for (final host in _manualHosts) {
-      try {
-        _socket?.send(request, InternetAddress(host), port);
-      } on Object {
-        // invalid address or unreachable - ignore
+    final request = utf8.encode('SYTRAK_DISCOVER');
+    var sent = _send(request, '255.255.255.255');
+
+    final prefixes = await _lanPrefixes();
+    for (final prefix in prefixes) {
+      sent = _send(request, '$prefix.255') || sent;
+      if (_stations.isEmpty) {
+        for (var i = 1; i < 255; i++) {
+          sent = _send(request, '$prefix.$i') || sent;
+        }
       }
     }
-    final newError = sent || _manualHosts.isNotEmpty ? null : 'Network broadcast blocked - add the PC by IP';
+    for (final host in _manualHosts) {
+      _send(request, host);
+    }
+
+    final String? newError;
+    if (sent || _manualHosts.isNotEmpty) {
+      newError = null;
+    } else if (prefixes.isEmpty) {
+      newError = 'Phone is not on Wi-Fi - connect to the same Wi-Fi as the PC';
+    } else {
+      newError = 'Network blocked discovery - add the PC by IP';
+    }
     if (newError != error) {
       error = newError;
       notifyListeners();
+    }
+  }
+
+  bool _send(List<int> data, String host) {
+    try {
+      return (_socket?.send(data, InternetAddress(host), port) ?? 0) > 0;
+    } on Object {
+      return false; // invalid address, unreachable or not permitted
+    }
+  }
+
+  /// First three octets of each private IPv4 address on a Wi-Fi/Ethernet/hotspot
+  /// interface (mobile data, VPN and loopback interfaces are skipped).
+  static Future<List<String>> _lanPrefixes() async {
+    const skip = ['rmnet', 'ccmni', 'v4-', 'tun', 'ppp', 'dummy', 'lo', 'clat'];
+    try {
+      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final prefixes = <String>{};
+      for (final iface in interfaces) {
+        final name = iface.name.toLowerCase();
+        if (skip.any(name.startsWith)) continue;
+        for (final addr in iface.addresses) {
+          final o = addr.address.split('.').map(int.tryParse).toList();
+          if (o.length != 4 || o.contains(null)) continue;
+          final private = o[0] == 10 || (o[0] == 172 && o[1]! >= 16 && o[1]! <= 31) || (o[0] == 192 && o[1] == 168);
+          if (private) prefixes.add('${o[0]}.${o[1]}.${o[2]}');
+        }
+      }
+      return prefixes.toList();
+    } on Object {
+      return const [];
     }
   }
 

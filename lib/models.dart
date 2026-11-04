@@ -100,3 +100,39 @@ class ScanAck {
   final bool accepted;
   final String reason;
 }
+
+/// The PC read a device and asks this phone to scan its sticker.
+class VerifyRequest {
+  VerifyRequest({required this.mac, required this.seq, required this.deviceType});
+
+  /// Expected MAC without colons, upper-case.
+  final String mac;
+  final String seq;
+  final String deviceType;
+
+  factory VerifyRequest.fromJson(Map<String, dynamic> json) => VerifyRequest(
+        mac: '${json['mac'] ?? ''}'.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase(),
+        seq: '${json['seq'] ?? ''}',
+        deviceType: '${json['device_type'] ?? ''}',
+      );
+
+  /// Does a scanned sticker belong to the device the PC is holding?
+  bool matches(QrData qr) => qr.mac != null && qr.mac == mac;
+}
+
+/// The PC's final verdict on the scanned sticker.
+class VerifyResult {
+  VerifyResult({required this.ok, required this.mac, required this.seq, required this.reason});
+
+  final bool ok;
+  final String mac;
+  final String seq;
+  final String reason;
+
+  factory VerifyResult.fromJson(Map<String, dynamic> json) => VerifyResult(
+        ok: json['ok'] == true,
+        mac: '${json['mac'] ?? ''}',
+        seq: '${json['seq'] ?? ''}',
+        reason: '${json['reason'] ?? ''}',
+      );
+}

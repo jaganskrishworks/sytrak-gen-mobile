@@ -22,6 +22,12 @@ class StationClient extends ChangeNotifier {
   LinkState state = LinkState.disconnected;
   String? error;
   ScanAck? lastAck;
+
+  /// Device the PC currently wants verified (expected MAC + SEQ); null = none yet.
+  VerifyRequest? verifyRequest;
+
+  /// PC's verdict on the last sticker sent.
+  VerifyResult? verifyResult;
   final _nfcRequests = StreamController<NfcWriteRequest>.broadcast();
 
   Stream<NfcWriteRequest> get nfcRequests => _nfcRequests.stream;
@@ -39,6 +45,8 @@ class StationClient extends ChangeNotifier {
     await disconnect();
     station = target;
     lastAck = null;
+    verifyRequest = null;
+    verifyResult = null;
     _set(LinkState.connecting);
 
     final client = MqttServerClient.withPort(target.host, mobileId, target.port)
@@ -128,6 +136,14 @@ class StationClient extends ChangeNotifier {
         case 'scan_ack':
           lastAck = ScanAck(data['accepted'] == true, '${data['reason'] ?? ''}');
           notifyListeners();
+        case 'verify_request':
+          verifyRequest = VerifyRequest.fromJson(data);
+          verifyResult = null;
+          lastAck = null;
+          notifyListeners();
+        case 'verify_result':
+          verifyResult = VerifyResult.fromJson(data);
+          notifyListeners();
         case 'nfc_write':
           _nfcRequests.add(NfcWriteRequest.fromJson(data));
       }
@@ -137,6 +153,7 @@ class StationClient extends ChangeNotifier {
   bool sendScan(String qr) {
     if (!isPaired) return false;
     lastAck = null;
+    verifyResult = null;
     notifyListeners();
     return _publish('evt/scan', jsonEncode({'qr': qr}));
   }
