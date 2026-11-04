@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/station_client.dart';
 import '../theme/app_colors.dart';
+import 'nfc_read_screen.dart';
 import 'nfc_write_screen.dart';
 import 'scanner_screen.dart';
 
@@ -25,7 +26,9 @@ class _SessionScreenState extends State<SessionScreen> {
   bool _sent = false;
   bool _nfcOpen = false;
   VerifyRequest? _request; // request the current scan belongs to
+  NfcReadRequest? _pendingRead; // read request that arrived while another NFC screen was open
   late final StreamSubscription<NfcWriteRequest> _nfcSub;
+  late final StreamSubscription<NfcReadRequest> _nfcReadSub;
 
   StationClient get client => widget.client;
 
@@ -33,6 +36,7 @@ class _SessionScreenState extends State<SessionScreen> {
   void initState() {
     super.initState();
     _nfcSub = client.nfcRequests.listen(_openNfcWrite);
+    _nfcReadSub = client.nfcReadRequests.listen(_openNfcRead);
     _request = client.verifyRequest;
     client.addListener(_onClientChanged);
   }
@@ -41,7 +45,29 @@ class _SessionScreenState extends State<SessionScreen> {
   void dispose() {
     client.removeListener(_onClientChanged);
     _nfcSub.cancel();
+    _nfcReadSub.cancel();
     super.dispose();
+  }
+
+  /// Read-only tag verification (from the PC, or the button on this screen).
+  Future<void> _openNfcRead(NfcReadRequest request) async {
+    if (!mounted) return;
+    if (_nfcOpen) {
+      _pendingRead = request; // e.g. "Write + Verify": the write screen is still showing
+      return;
+    }
+    _nfcOpen = true;
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => NfcReadScreen(client: client, request: request)),
+    );
+    _nfcOpen = false;
+    _openPendingRead();
+  }
+
+  void _openPendingRead() {
+    final next = _pendingRead;
+    _pendingRead = null;
+    if (next != null) _openNfcRead(next);
   }
 
   /// A new device from the PC starts a fresh sticker check.
@@ -67,6 +93,7 @@ class _SessionScreenState extends State<SessionScreen> {
         _sent = false;
       });
     }
+    _openPendingRead();
   }
 
   Future<void> _scan() async {
@@ -137,6 +164,12 @@ class _SessionScreenState extends State<SessionScreen> {
                     client.verifyResult != null ? _VerifyResultBanner(result: client.verifyResult!) : _AckBanner(ack: client.lastAck),
                   ],
                 ],
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: () => _openNfcRead(NfcReadRequest(seq: request.seq, mac: request.mac, expected: request.mac)),
+                  icon: const Icon(Icons.nfc_rounded),
+                  label: const Text('Verify NFC tag (read only)'),
+                ),
               ],
             ],
           ),

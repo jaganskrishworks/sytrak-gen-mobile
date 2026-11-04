@@ -94,6 +94,23 @@ class NfcWriteRequest {
       );
 }
 
+/// Station asks this phone to read a tag and report its content (verification only).
+class NfcReadRequest {
+  NfcReadRequest({required this.seq, required this.mac, required this.expected});
+
+  final String seq;
+  final String mac;
+
+  /// Text the tag should contain (the MAC without colons).
+  final String expected;
+
+  factory NfcReadRequest.fromJson(Map<String, dynamic> json) => NfcReadRequest(
+        seq: '${json['seq'] ?? ''}',
+        mac: '${json['mac'] ?? ''}',
+        expected: '${json['expected'] ?? json['mac'] ?? ''}',
+      );
+}
+
 class ScanAck {
   ScanAck(this.accepted, this.reason);
 

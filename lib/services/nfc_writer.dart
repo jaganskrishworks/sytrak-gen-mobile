@@ -32,6 +32,47 @@ class NfcWriter {
 
   static Future<void> cancel() => NfcManager.instance.stopSession(errorMessageIos: 'Cancelled');
 
+  /// Reads the next tag that is tapped and returns its NDEF text (nothing is written).
+  /// Throws [NfcWriteException] if the tag has no NDEF text record or cannot be read.
+  static Future<String> readTag() async {
+    final completer = Completer<String>();
+
+    void fail(String reason) {
+      if (!completer.isCompleted) completer.completeError(NfcWriteException(reason));
+      NfcManager.instance.stopSession(errorMessageIos: reason);
+    }
+
+    await NfcManager.instance.startSession(
+      pollingOptions: {NfcPollingOption.iso14443, NfcPollingOption.iso15693},
+      alertMessageIos: 'Hold the NFC tag near the top of the iPhone',
+      invalidateAfterFirstReadIos: false,
+      onSessionErrorIos: (err) {
+        if (!completer.isCompleted) completer.completeError(NfcWriteException(err.message));
+      },
+      onDiscovered: (tag) async {
+        try {
+          NdefMessage? message;
+          if (Platform.isAndroid) {
+            final ndef = NdefAndroid.from(tag);
+            if (ndef == null) return fail('Tag is empty or not NDEF formatted');
+            message = await ndef.getNdefMessage();
+          } else {
+            final ndef = NdefIos.from(tag);
+            if (ndef == null) return fail('Tag is empty or not NDEF formatted');
+            message = await ndef.readNdef();
+          }
+          final text = readText(message);
+          if (text == null) return fail('No text found on the tag');
+          await NfcManager.instance.stopSession(alertMessageIos: 'Tag read');
+          if (!completer.isCompleted) completer.complete(text);
+        } on Object catch (e) {
+          fail('Read failed - keep the tag still and try again ($e)');
+        }
+      },
+    );
+    return completer.future;
+  }
+
   /// Text of the first NDEF "T" record, or null if the message has none.
   static String? readText(NdefMessage? message) {
     for (final record in message?.records ?? const <NdefRecord>[]) {

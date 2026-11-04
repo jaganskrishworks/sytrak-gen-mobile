@@ -29,6 +29,9 @@ class StationClient extends ChangeNotifier {
   /// PC's verdict on the last sticker sent.
   VerifyResult? verifyResult;
   final _nfcRequests = StreamController<NfcWriteRequest>.broadcast();
+  final _nfcReadRequests = StreamController<NfcReadRequest>.broadcast();
+
+  Stream<NfcReadRequest> get nfcReadRequests => _nfcReadRequests.stream;
 
   Stream<NfcWriteRequest> get nfcRequests => _nfcRequests.stream;
   bool get isPaired => state == LinkState.paired;
@@ -146,6 +149,8 @@ class StationClient extends ChangeNotifier {
           notifyListeners();
         case 'nfc_write':
           _nfcRequests.add(NfcWriteRequest.fromJson(data));
+        case 'nfc_read':
+          _nfcReadRequests.add(NfcReadRequest.fromJson(data));
       }
     }
   }
@@ -156,6 +161,11 @@ class StationClient extends ChangeNotifier {
     verifyResult = null;
     notifyListeners();
     return _publish('evt/scan', jsonEncode({'qr': qr}));
+  }
+
+  /// Result of reading a tag for verification (no write).
+  void sendNfcReadResult({required bool ok, String text = '', String error = ''}) {
+    _publish('evt/nfc_read_result', jsonEncode({'ok': ok, 'text': text, 'error': error}));
   }
 
   /// [readBack] is the text read from the tag after writing (verification).
@@ -179,6 +189,7 @@ class StationClient extends ChangeNotifier {
   void dispose() {
     disconnect();
     _nfcRequests.close();
+    _nfcReadRequests.close();
     super.dispose();
   }
 }

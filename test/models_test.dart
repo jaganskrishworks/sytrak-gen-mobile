@@ -27,6 +27,11 @@ void main() {
     expect(req.matches(QrData.parse('hello')), isFalse);
   });
 
+  test('NFC read request falls back to the MAC as expected text', () {
+    expect(NfcReadRequest.fromJson({'seq': '0001', 'mac': 'E9EBA0ED7C7C', 'expected': 'E9EBA0ED7C7C'}).expected, 'E9EBA0ED7C7C');
+    expect(NfcReadRequest.fromJson({'mac': 'E9EBA0ED7C7C'}).expected, 'E9EBA0ED7C7C');
+  });
+
   test('parses a discovery beacon', () {
     final s = Station.fromBeacon(
         '{"type":"sytrak-gen","v":1,"station":"SG-PC1","name":"Line 1","mqtt_port":1883,"auth":false,"paired":""}', '192.168.1.5');
