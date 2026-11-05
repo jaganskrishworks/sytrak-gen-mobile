@@ -49,7 +49,7 @@ class _SessionScreenState extends State<SessionScreen> {
     super.dispose();
   }
 
-  /// Read-only tag verification (from the PC, or the button on this screen).
+  /// Tag read requested by the PC (Verification 1 read-back or Verification 2).
   Future<void> _openNfcRead(NfcReadRequest request) async {
     if (!mounted) return;
     if (_nfcOpen) {
@@ -164,12 +164,6 @@ class _SessionScreenState extends State<SessionScreen> {
                     client.verifyResult != null ? _VerifyResultBanner(result: client.verifyResult!) : _AckBanner(ack: client.lastAck),
                   ],
                 ],
-                const SizedBox(height: 16),
-                OutlinedButton.icon(
-                  onPressed: () => _openNfcRead(NfcReadRequest(seq: request.seq, mac: request.mac, expected: request.mac)),
-                  icon: const Icon(Icons.nfc_rounded),
-                  label: const Text('Verify NFC tag (read only)'),
-                ),
               ],
             ],
           ),
