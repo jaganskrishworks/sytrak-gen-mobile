@@ -239,6 +239,80 @@ class NtagDriver {
     }
   }
 
+  /// Verification 1 · erase: make the tag new again - blank NDEF area, unlocked, factory password.
+  /// [blank] comes from the PC (empty NDEF message, then zeros); [pwd]/[pack] = the tag's current password.
+  /// Order matters for dropouts: clear the data (old password), AUTH0 = FF (unlock), then ACCESS and
+  /// PWD/PACK - after the unlock no password is needed, so a retry always works. Same as ntag_sim.erase_job.
+  Future<Map<String, Object>> eraseJob(int startPage, Uint8List blank, Uint8List pwd, Uint8List pack) async {
+    try {
+      if (cfg0 == null) await inspect();
+      if (cfg0 == null) return await _done(ok: false, step: 'check', error: 'Not an NTAG213/215/216');
+      final c = cfg0! * 4;
+      final cfg0Bytes = pages.sublist(c, c + 4), cfg1Bytes = pages.sublist(c + 4, c + 8);
+      if (cfg1Bytes[0] & 0x40 != 0) {
+        return await _done(ok: false, step: 'check', error: 'CFGLCK set - the configuration is frozen, this tag cannot be reset');
+      }
+      final protected = cfg0Bytes[3] <= lastPage;
+      if (protected && !await _auth(pwd, pack)) {
+        return await _done(ok: false, step: 'pwd_auth', error: 'Tag is locked with another password - it cannot be erased');
+      }
+
+      // 1. Clear the NDEF area: only the pages that differ from blank.
+      final start = startPage * 4;
+      var changed = 0;
+      for (var i = 0; i < blank.length; i += 4) {
+        if (!_samePage(pages, start + i, blank, i)) {
+          await _writePages(startPage + i ~/ 4, blank.sublist(i, i + 4), pwd, pack, protected);
+          changed++;
+        }
+      }
+      _step('erase', true, changed > 0 ? '$changed page(s) cleared' : 'NDEF area was already blank');
+      var isBlank = false;
+      for (var attempt = 0; attempt < _maxTries && !isBlank; attempt++) {
+        final back = await _readAll();
+        var bad = -1;
+        for (var i = 0; i < blank.length; i += 4) {
+          if (!_samePage(back, start + i, blank, i)) {
+            bad = i;
+            break;
+          }
+        }
+        if (bad < 0) {
+          isBlank = true;
+          _step('readback', true, '${blank.length} B blank');
+        } else {
+          _step('readback', false, 'page ${startPage + bad ~/ 4} not blank - clearing again');
+          await _writePages(startPage + bad ~/ 4, blank.sublist(bad, bad + 4), pwd, pack, protected);
+        }
+      }
+      if (!isBlank) return await _done(ok: false, step: 'readback', error: 'The NDEF area is still not blank after $_maxTries tries');
+
+      // 2. Unlock: AUTH0 = FF (keep CFG0 bytes 0-2). From here on no page needs the password.
+      if (protected) await _writePages(cfg0!, [...cfg0Bytes.sublist(0, 3), 0xFF], pwd, pack, true);
+      _step('unlock', true, protected ? 'AUTH0 = FF: open' : 'was not locked');
+      // 3. ACCESS: clear PROT, CFGLCK, AUTHLIM (keep the NFC counter bits and CFG1 bytes 1-3).
+      await _writePages(cfg0! + 1, [cfg1Bytes[0] & 0x38, ...cfg1Bytes.sublist(1, 4)], pwd, pack, false);
+      // 4. Factory password: PWD FFFFFFFF, PACK 0000.
+      await _writePages(cfg0! + 2, [..._factoryPwd, ..._factoryPack, 0, 0], pwd, pack, false);
+      _step('password', true, 'PWD FFFFFFFF and PACK 0000 written (factory)');
+      await io.reconnect();
+      final isDefault = await _auth(_factoryPwd, _factoryPack);
+      _step('pwd_auth', isDefault, isDefault ? 'factory password answers PACK 0000' : 'factory password refused');
+      return await _done(ok: true, password: isDefault ? 'default' : 'failed', pwdWritten: true);
+    } on NtagException catch (e) {
+      return await _done(ok: false, step: 'erase', error: '${e.message} - hold the tag still and try again');
+    }
+  }
+
+  static const _factoryPwd = [0xFF, 0xFF, 0xFF, 0xFF], _factoryPack = [0x00, 0x00];
+
+  static bool _samePage(List<int> a, int aStart, List<int> b, int bStart) {
+    for (var k = 0; k < 4; k++) {
+      if (a[aStart + k] != b[bStart + k]) return false;
+    }
+    return true;
+  }
+
   /// Verification 2: read only - check the password with PWD_AUTH, read every page.
   Future<Map<String, Object>> verifyJob(Uint8List pwd, Uint8List pack) async {
     try {

@@ -86,17 +86,23 @@ class NfcJob {
 
   final String jobId;
 
-  /// 'write' (Verification 1: write the signed sticker) or 'verify' (Verification 2: read only).
+  /// 'write' (Verification 1: write the signed sticker), 'erase' (Verification 1: make the tag new
+  /// again) or 'verify' (Verification 2: read only).
   final String mode;
   final String mac;
   final String seq;
 
   bool get isWrite => mode == 'write';
-  String get title => isWrite ? 'Verification 1 · write signed sticker' : 'Verification 2 · verify sticker';
+  bool get isErase => mode == 'erase';
+  String get title => switch (mode) {
+        'write' => 'Verification 1 · write signed sticker',
+        'erase' => 'Verification 1 · erase tag',
+        _ => 'Verification 2 · verify sticker',
+      };
 
   factory NfcJob.fromJson(Map<String, dynamic> json) => NfcJob(
         jobId: '${json['job_id'] ?? ''}',
-        mode: json['mode'] == 'write' ? 'write' : 'verify',
+        mode: const {'write', 'erase'}.contains(json['mode']) ? json['mode'] as String : 'verify',
         mac: '${json['mac'] ?? ''}',
         seq: '${json['seq'] ?? ''}',
       );
@@ -142,8 +148,9 @@ class NfcJobReply {
   String? problem(NfcJob job) {
     if (!ok) return reason.isEmpty ? 'The PC refused the tag' : reason;
     if (pwd?.length != 4 || pack?.length != 2) return 'The PC sent no valid tag password';
-    if (job.isWrite && (writePage == null || writeData == null || writeData!.isEmpty || writeData!.length % 4 != 0)) {
-      return 'The PC sent no data to write';
+    if ((job.isWrite || job.isErase) &&
+        (writePage == null || writeData == null || writeData!.isEmpty || writeData!.length % 4 != 0)) {
+      return job.isErase ? 'The PC sent no blank data to erase with' : 'The PC sent no data to write';
     }
     return null;
   }

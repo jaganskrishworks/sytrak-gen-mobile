@@ -143,6 +143,51 @@ void main() {
     expect(tag.mem, before);
   });
 
+  // Erase: the blank area the PC sends for an NTAG213 (empty NDEF message, then zeros).
+  final blank = Uint8List(144)..setRange(0, 4, [0x03, 0x00, 0xFE, 0x00]);
+  final factory = Uint8List.fromList(FakeNtag('04C34DEA0B1390').mem);
+
+  test('erase: a written + locked tag becomes like new, then can be written again', () async {
+    final tag = FakeNtag('04C34DEA0B1390');
+    await NtagDriver(tag).writeJob(4, ndef, pwd, pack, lock: true);
+    expect(tag.auth0, 0x02);
+    final driver = NtagDriver(tag);
+    final result = await driver.eraseJob(4, blank, pwd, pack);
+    expect(result['ok'], isTrue, reason: '${result['error']}');
+    expect(result['password'], 'default');
+    expect(tag.mem, factory); // every page, PWD/PACK and AUTH0 as on a new tag
+    expect(driver.steps.map((s) => s['step']), containsAll(['erase', 'readback', 'unlock', 'password', 'pwd_auth']));
+
+    final again = await NtagDriver(tag).writeJob(4, ndef, pwd, pack, lock: true);
+    expect(again['ok'], isTrue);
+    expect(again['locked'], isTrue);
+  });
+
+  test('erase resumes after dropouts (data page, unlock, PACK)', () async {
+    final tag = FakeNtag('04C34DEA0B1390');
+    await NtagDriver(tag).writeJob(4, ndef, pwd, pack, lock: true);
+    tag.dropWriteAt.addAll([5, FakeNtag.cfg0, FakeNtag.cfg0 + 3]);
+    final result = await NtagDriver(tag).eraseJob(4, blank, pwd, pack);
+    expect(result['ok'], isTrue, reason: '${result['error']}');
+    expect(tag.mem, factory);
+  });
+
+  test('erase: another password or a frozen tag changes nothing', () async {
+    final tag = FakeNtag('04C34DEA0B1390');
+    await NtagDriver(tag).writeJob(4, ndef, pwd, pack, lock: true);
+    final before = Uint8List.fromList(tag.mem);
+    final foreign = await NtagDriver(tag).eraseJob(4, blank, Uint8List.fromList([1, 2, 3, 4]), pack);
+    expect(foreign['ok'], isFalse);
+    expect(foreign['step'], 'pwd_auth');
+    expect(tag.mem, before);
+
+    final frozen = FakeNtag('04C34DEA0B1390');
+    frozen.mem[(FakeNtag.cfg0 + 1) * 4] = 0x40;
+    final res = await NtagDriver(frozen).eraseJob(4, blank, pwd, pack);
+    expect(res['ok'], isFalse);
+    expect(res['step'], 'check');
+  });
+
   test('frozen configuration is refused before writing', () async {
     final tag = FakeNtag('04C34DEA0B1390');
     tag.mem[(FakeNtag.cfg0 + 1) * 4] = 0x40;

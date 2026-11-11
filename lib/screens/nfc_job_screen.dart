@@ -41,6 +41,7 @@ class _NfcJobScreenState extends State<NfcJobScreen> {
   static const _stepNames = {
     'tag': 'Tag detected', 'write': 'Write', 'readback': 'Read back', 'password': 'Password set',
     'pwd_auth': 'Password check', 'lock': 'Lock', 'read': 'Read', 'final read': 'Final read',
+    'erase': 'Erase', 'unlock': 'Unlock',
   };
 
   @override
@@ -138,10 +139,18 @@ class _NfcJobScreenState extends State<NfcJobScreen> {
           _set(_Phase.refused, problem);
           return;
         }
-        _set(_Phase.working, job.isWrite ? 'Writing the signed sticker - keep the tag still…' : 'Checking the tag - keep it still…');
+        _set(
+            _Phase.working,
+            job.isWrite
+                ? 'Writing the signed sticker - keep the tag still…'
+                : job.isErase
+                    ? 'Erasing the tag - keep it still…'
+                    : 'Checking the tag - keep it still…');
         final result = job.isWrite
             ? await driver.writeJob(reply.writePage!, reply.writeData!, reply.pwd!, reply.pack!, lock: reply.lock)
-            : await driver.verifyJob(reply.pwd!, reply.pack!);
+            : job.isErase
+                ? await driver.eraseJob(reply.writePage!, reply.writeData!, reply.pwd!, reply.pack!)
+                : await driver.verifyJob(reply.pwd!, reply.pack!);
         _stopSession();
         _doneSent = true;
         _set(_Phase.waitingVerdict, result['ok'] == true ? 'Done - the PC is checking the tag…' : '${result['error']}');
@@ -179,7 +188,11 @@ class _NfcJobScreenState extends State<NfcJobScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(job.isWrite ? 'Write NFC sticker' : 'Verify NFC sticker'),
+          title: Text(job.isWrite
+              ? 'Write NFC sticker'
+              : job.isErase
+                  ? 'Erase NFC tag'
+                  : 'Verify NFC sticker'),
           leading: IconButton(icon: const Icon(Icons.close), onPressed: _close),
         ),
         body: ListView(
@@ -282,11 +295,18 @@ class _JobCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(job.isWrite ? Icons.edit_note_rounded : Icons.fact_check_rounded, color: AppColors.primary),
+                  Icon(
+                      job.isWrite
+                          ? Icons.edit_note_rounded
+                          : job.isErase
+                              ? Icons.cleaning_services_rounded
+                              : Icons.fact_check_rounded,
+                      color: job.isErase ? AppColors.error : AppColors.primary),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(job.title.toUpperCase(),
-                        style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.primary, letterSpacing: 0.5)),
+                        style: TextStyle(
+                            fontWeight: FontWeight.w800, color: job.isErase ? AppColors.error : AppColors.primary, letterSpacing: 0.5)),
                   ),
                 ],
               ),
@@ -296,7 +316,12 @@ class _JobCard extends StatelessWidget {
               if (job.seq.isNotEmpty) Text('SEQ  ${job.seq}', style: const TextStyle(fontSize: 17, color: AppColors.textSecondary)),
               if (uid.isNotEmpty) Text('Tag  $uid', style: const TextStyle(fontFamily: 'monospace', color: AppColors.textSecondary)),
               const SizedBox(height: 6),
-              Text(job.isWrite ? 'The PC signs the sticker and sets its password, then the tag is locked against writing (when locking is on).' : 'Nothing is written to the tag.',
+              Text(
+                  job.isWrite
+                      ? 'The PC signs the sticker and sets its password, then the tag is locked against writing (when locking is on).'
+                      : job.isErase
+                          ? 'The sticker data, the lock and the tag password are removed - the tag becomes like new and can be written again.'
+                          : 'Nothing is written to the tag.',
                   style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
             ],
           ),
@@ -322,7 +347,7 @@ class _VerdictCard extends StatelessWidget {
                   Icon(verdict.ok ? Icons.verified_rounded : Icons.gpp_bad_rounded, color: verdict.ok ? AppColors.success : AppColors.error),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(verdict.ok ? 'Verified by the PC' : 'Not verified',
+                    child: Text(verdict.ok ? 'Checked by the PC' : 'Not OK',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: verdict.ok ? AppColors.success : AppColors.error)),
                   ),
                 ],

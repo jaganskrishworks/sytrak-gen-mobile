@@ -43,6 +43,19 @@ void main() {
     expect(NfcJobReply.fromJson({'job_id': 'j-1', 'ok': true, 'pwd': 'A1B2C3D4', 'pack': '53B1'}).problem(job), contains('write'));
   });
 
+  test('NFC erase job needs the blank data', () {
+    final erase = NfcJob.fromJson({'job_id': 'j-3', 'mode': 'erase', 'mac': 'E9EBA0ED7C7C'});
+    expect(erase.isErase, isTrue);
+    expect(erase.isWrite, isFalse);
+    expect(erase.title, 'Verification 1 · erase tag');
+    final noBlank = NfcJobReply.fromJson({'job_id': 'j-3', 'ok': true, 'pwd': 'A1B2C3D4', 'pack': '53B1'});
+    expect(noBlank.problem(erase), contains('blank'));
+    final ok = NfcJobReply.fromJson({
+      'job_id': 'j-3', 'ok': true, 'mode': 'erase', 'write': {'page': 4, 'data': '0300FE00'}, 'pwd': 'A1B2C3D4', 'pack': '53B1',
+    });
+    expect(ok.problem(erase), isNull);
+  });
+
   test('NFC verdict parsing', () {
     final v = NfcVerdict.fromJson({
       'job_id': 'j-1', 'ok': true, 'headline': 'STICKER VERIFIED', 'uid': '04C34DEA0B1390',
