@@ -50,17 +50,53 @@ class StationClient extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> connect(Station target, {String password = ''}) async {
-    await disconnect();
-    station = target;
+  /// Connect to a station picked by the user (starts a new session).
+  Future<bool> connect(Station target, {String password = ''}) {
     lastAck = null;
     verifyRequest = null;
     verifyResult = null;
-    _set(LinkState.connecting);
+    return _open(target, password);
+  }
+
+  /// Drop the current link and open a fresh one to the same station, keeping the session
+  /// (the device the PC asked to verify stays on screen; the PC re-sends "paired").
+  /// [via] = the station as discovery sees it now (its IP may have changed).
+  Future<bool> reconnect({Station? via}) async {
+    final old = station;
+    final target = via ?? (old == null ? null : lookup?.call(old.id)) ?? old;
+    if (target == null || _reconnecting) return false;
+    _reconnecting = true;
+    try {
+      return await _open(target, _password, reconnecting: true);
+    } finally {
+      _reconnecting = false;
+    }
+  }
+
+  /// True while the user wants to be connected (connect() called, not disconnect()).
+  bool get wantsLink => _wantLink;
+  bool get isUp => state == LinkState.connected || state == LinkState.paired;
+
+  /// Where a station is now, by id (set from discovery) - used by [reconnect].
+  Station? Function(String id)? lookup;
+
+  String _password = '';
+  bool _wantLink = false;
+  bool _reconnecting = false;
+
+  Future<bool> _open(Station target, String password, {bool reconnecting = false}) async {
+    await _close();
+    station = target;
+    _password = password;
+    _wantLink = true;
+    _set(LinkState.connecting, err: reconnecting ? 'Reconnecting to ${target.host}…' : null);
 
     final client = MqttServerClient.withPort(target.host, mobileId, target.port)
       ..setProtocolV311()
-      ..keepAlivePeriod = 20
+      ..keepAlivePeriod = 10
+      // No ping answer within 5 s = the link is dead (e.g. half-open after Wi-Fi power-save):
+      // disconnect so auto-reconnect starts instead of hanging.
+      ..disconnectOnNoResponsePeriod = 5
       ..connectTimeoutPeriod = 5000
       ..autoReconnect = true
       ..logging(on: false);
@@ -71,23 +107,40 @@ class StationClient extends ChangeNotifier {
         .withWillQos(MqttQos.atLeastOnce)
         .withWillRetain()
         .startClean();
-    client.onDisconnected = _onDisconnected;
-    client.onAutoReconnect = () => _set(LinkState.connecting);
-    client.onAutoReconnected = _announce;
+    // Callbacks only count while this is still the current client (an old one may fire late).
+    client.onDisconnected = () {
+      if (identical(_client, client)) _onDisconnected(client);
+    };
+    client.onAutoReconnect = () {
+      if (identical(_client, client)) _set(LinkState.connecting, err: 'Connection lost - reconnecting…');
+    };
+    client.onAutoReconnected = () {
+      if (identical(_client, client)) _announce();
+    };
     _client = client;
 
     try {
       await client.connect(target.auth ? 'sytrak' : null, target.auth ? password : null);
-    } on Exception catch (e) {
+    } on Object catch (e) {
+      if (!identical(_client, client)) return false; // replaced meanwhile
       _client = null;
+      client.autoReconnect = false;
       client.disconnect();
       final refused = client.connectionStatus?.returnCode == MqttConnectReturnCode.badUsernameOrPassword ||
           client.connectionStatus?.returnCode == MqttConnectReturnCode.notAuthorized;
-      _set(LinkState.failed, err: refused ? 'Wrong station password' : 'Could not reach ${target.host}:${target.port} ($e)');
+      // A first connect that fails is the user's to retry; a reconnect keeps trying (unless refused).
+      if (!reconnecting || refused) _wantLink = false;
+      _set(LinkState.failed,
+          err: refused
+              ? 'Wrong station password'
+              : 'Could not reach ${target.host}:${target.port}${reconnecting ? ' - retrying…' : ' ($e)'}');
       return false;
     }
+    if (!identical(_client, client)) return false; // replaced meanwhile
     if (client.connectionStatus?.state != MqttConnectionState.connected) {
       _client = null;
+      client.autoReconnect = false;
+      _wantLink = false;
       _set(LinkState.failed, err: 'Connection refused (${client.connectionStatus?.returnCode})');
       return false;
     }
@@ -104,7 +157,13 @@ class StationClient extends ChangeNotifier {
     if (state != LinkState.paired) _set(LinkState.connected);
   }
 
+  /// User left the station: no automatic reconnects any more.
   Future<void> disconnect() async {
+    _wantLink = false;
+    await _close();
+  }
+
+  Future<void> _close() async {
     final client = _client;
     _client = null;
     await _updates?.cancel();
@@ -119,9 +178,8 @@ class StationClient extends ChangeNotifier {
     if (state != LinkState.disconnected) _set(LinkState.disconnected);
   }
 
-  void _onDisconnected() {
-    if (_client == null) return; // we disconnected on purpose
-    if (_client!.connectionStatus?.disconnectionOrigin == MqttDisconnectionOrigin.solicited) {
+  void _onDisconnected(MqttServerClient client) {
+    if (client.connectionStatus?.disconnectionOrigin == MqttDisconnectionOrigin.solicited) {
       _set(LinkState.disconnected);
     } else {
       _set(LinkState.connecting, err: 'Connection lost - reconnecting…');

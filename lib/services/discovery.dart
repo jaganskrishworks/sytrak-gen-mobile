@@ -41,32 +41,56 @@ class StationDiscovery extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _socket!
+    final socket = _socket!;
+    socket
       ..broadcastEnabled = true
       ..listen(
         (event) {
+          if (event == RawSocketEvent.closed) return _drop(socket);
           if (event != RawSocketEvent.read) return;
-          final dg = _socket?.receive();
+          final dg = socket.receive();
           if (dg != null) _onDatagram(dg);
         },
-        onError: (Object e) {
-          error = 'Network error - pull down to retry';
-          notifyListeners();
-        },
+        // The OS can close the socket while the app is in the background: throw it away so the
+        // next probe binds a new one (a dead socket would leave the list at "Searching…" forever).
+        onError: (Object e) => _drop(socket),
+        onDone: () => _drop(socket),
+        cancelOnError: true,
       );
-    probe();
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+    // One timer only - start() is also called again from probe() after a dropped socket.
+    _timer ??= Timer.periodic(const Duration(seconds: 3), (_) {
       probe();
       _expire();
     });
+    probe();
+  }
+
+  void _drop(RawDatagramSocket socket) {
+    if (!identical(_socket, socket)) return; // already replaced
+    socket.close();
+    _socket = null;
   }
 
   void stop() {
     _timer?.cancel();
     _timer = null;
-    _socket?.close();
+    final socket = _socket;
     _socket = null;
+    socket?.close();
   }
+
+  /// Fresh start: new socket, empty list, immediate probe (app resumed, pull to refresh).
+  Future<void> restart() async {
+    stop();
+    _stations.clear();
+    _lastSeen.clear();
+    error = null;
+    notifyListeners();
+    await start();
+  }
+
+  /// Station with this id seen recently (its current address), else null.
+  Station? find(String id) => _stations[id];
 
   @override
   void dispose() {

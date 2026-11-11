@@ -287,8 +287,9 @@ class _StatusCard extends StatelessWidget {
           'On the PC: Verify QR → select "${client.mobileName}" → Connect',
         ),
       LinkState.connecting => (Icons.sync_rounded, AppColors.primary, AppColors.primarySoft, 'Connecting…', client.error ?? ''),
-      _ => (Icons.error_rounded, AppColors.error, AppColors.errorSoft, 'Not connected', client.error ?? 'Go back and pick the station again.'),
+      _ => (Icons.error_rounded, AppColors.error, AppColors.errorSoft, 'Not connected', client.error ?? 'Tap Reconnect, or go back and pick the station again.'),
     };
+    final down = !client.isUp;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -309,6 +310,14 @@ class _StatusCard extends StatelessWidget {
                   if (detail.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(detail, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                  ],
+                  if (down) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => client.reconnect(),
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: const Text('Reconnect'),
+                    ),
                   ],
                 ],
               ),

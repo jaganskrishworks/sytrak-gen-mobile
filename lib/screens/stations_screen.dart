@@ -123,7 +123,7 @@ class _StationsScreenState extends State<StationsScreen> {
         builder: (context, _) {
           final stations = widget.discovery.stations;
           return RefreshIndicator(
-            onRefresh: () async => widget.discovery.probe(),
+            onRefresh: () => widget.discovery.restart(),
             color: AppColors.primary,
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
