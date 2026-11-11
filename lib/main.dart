@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 
 import 'screens/stations_screen.dart';
@@ -9,6 +12,16 @@ import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // A socket the MQTT library already gave up on can still report "connection reset" / "broken
+  // pipe" asynchronously. The link is handled by StationClient; just log these instead of
+  // treating them as crashes.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    if (error is SocketException) {
+      debugPrint('Network: ${error.message} (${error.osError?.message ?? ''}) - handled by the reconnect logic');
+      return true;
+    }
+    return false;
+  };
   final identity = await Identity.load();
   final discovery = StationDiscovery(manualHosts: identity.manualHosts);
   final client = StationClient(mobileId: identity.id, mobileName: identity.name);

@@ -65,13 +65,38 @@ class StationClient extends ChangeNotifier {
     final old = station;
     final target = via ?? (old == null ? null : lookup?.call(old.id)) ?? old;
     if (target == null || _reconnecting) return false;
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _reconnecting = true;
     try {
-      return await _open(target, _password, reconnecting: true);
+      final ok = await _open(target, _password, reconnecting: true);
+      if (ok) {
+        _retries = 0;
+      } else {
+        _scheduleRetry();
+      }
+      return ok;
     } finally {
       _reconnecting = false;
     }
   }
+
+  /// The ONE place that retries a lost link (the MQTT library's own autoReconnect stays off:
+  /// its loop keeps reconnecting a client even after it was closed, and two clients with the
+  /// same id then kick each other off the broker every few seconds).
+  void _scheduleRetry() {
+    if (!_wantLink || _retryTimer != null) return;
+    const delays = [1, 2, 3, 5];
+    final seconds = delays[_retries < delays.length ? _retries : delays.length - 1];
+    _retries++;
+    _retryTimer = Timer(Duration(seconds: seconds), () {
+      _retryTimer = null;
+      if (_wantLink && !isUp) reconnect();
+    });
+  }
+
+  Timer? _retryTimer;
+  int _retries = 0;
 
   /// True while the user wants to be connected (connect() called, not disconnect()).
   bool get wantsLink => _wantLink;
@@ -95,10 +120,10 @@ class StationClient extends ChangeNotifier {
       ..setProtocolV311()
       ..keepAlivePeriod = 10
       // No ping answer within 5 s = the link is dead (e.g. half-open after Wi-Fi power-save):
-      // disconnect so auto-reconnect starts instead of hanging.
+      // disconnect, then _scheduleRetry() opens a fresh client.
       ..disconnectOnNoResponsePeriod = 5
       ..connectTimeoutPeriod = 5000
-      ..autoReconnect = true
+      ..autoReconnect = false // never: see _scheduleRetry()
       ..logging(on: false);
     client.connectionMessage = MqttConnectMessage()
         .withClientIdentifier(mobileId)
@@ -111,21 +136,17 @@ class StationClient extends ChangeNotifier {
     client.onDisconnected = () {
       if (identical(_client, client)) _onDisconnected(client);
     };
-    client.onAutoReconnect = () {
-      if (identical(_client, client)) _set(LinkState.connecting, err: 'Connection lost - reconnecting…');
-    };
-    client.onAutoReconnected = () {
-      if (identical(_client, client)) _announce();
-    };
     _client = client;
 
     try {
       await client.connect(target.auth ? 'sytrak' : null, target.auth ? password : null);
     } on Object catch (e) {
-      if (!identical(_client, client)) return false; // replaced meanwhile
+      if (!identical(_client, client)) {
+        _kill(client); // replaced meanwhile - make sure this one is gone
+        return false;
+      }
       _client = null;
-      client.autoReconnect = false;
-      client.disconnect();
+      _kill(client);
       final refused = client.connectionStatus?.returnCode == MqttConnectReturnCode.badUsernameOrPassword ||
           client.connectionStatus?.returnCode == MqttConnectReturnCode.notAuthorized;
       // A first connect that fails is the user's to retry; a reconnect keeps trying (unless refused).
@@ -136,10 +157,15 @@ class StationClient extends ChangeNotifier {
               : 'Could not reach ${target.host}:${target.port}${reconnecting ? ' - retrying…' : ' ($e)'}');
       return false;
     }
-    if (!identical(_client, client)) return false; // replaced meanwhile
+    if (!identical(_client, client)) {
+      // Another connect started while this one was in flight: close it, or it would stay
+      // connected with our client id and kick the current one off the broker.
+      _kill(client);
+      return false;
+    }
     if (client.connectionStatus?.state != MqttConnectionState.connected) {
       _client = null;
-      client.autoReconnect = false;
+      _kill(client);
       _wantLink = false;
       _set(LinkState.failed, err: 'Connection refused (${client.connectionStatus?.returnCode})');
       return false;
@@ -160,6 +186,9 @@ class StationClient extends ChangeNotifier {
   /// User left the station: no automatic reconnects any more.
   Future<void> disconnect() async {
     _wantLink = false;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retries = 0;
     await _close();
   }
 
@@ -169,20 +198,40 @@ class StationClient extends ChangeNotifier {
     await _updates?.cancel();
     _updates = null;
     if (client != null) {
-      client.autoReconnect = false;
       if (client.connectionStatus?.state == MqttConnectionState.connected) {
-        _publishOn(client, 'status', 'offline', retain: true);
+        try {
+          _publishOn(client, 'status', 'offline', retain: true);
+        } on Object {
+          // socket already gone
+        }
       }
-      client.disconnect();
+      _kill(client);
     }
     if (state != LinkState.disconnected) _set(LinkState.disconnected);
   }
 
+  /// Close a client for good: no callbacks, no reconnects, socket errors ignored.
+  static void _kill(MqttServerClient client) {
+    client.onDisconnected = null;
+    client.autoReconnect = false;
+    try {
+      client.disconnect();
+    } on Object {
+      // already closed
+    }
+  }
+
   void _onDisconnected(MqttServerClient client) {
-    if (client.connectionStatus?.disconnectionOrigin == MqttDisconnectionOrigin.solicited) {
-      _set(LinkState.disconnected);
-    } else {
+    _client = null; // this client is finished; a retry opens a new one
+    _updates?.cancel();
+    _updates = null;
+    final lost = client.connectionStatus?.disconnectionOrigin != MqttDisconnectionOrigin.solicited;
+    _kill(client);
+    if (lost && _wantLink) {
       _set(LinkState.connecting, err: 'Connection lost - reconnecting…');
+      _scheduleRetry();
+    } else {
+      _set(LinkState.disconnected);
     }
   }
 
