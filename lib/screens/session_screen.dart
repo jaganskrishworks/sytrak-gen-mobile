@@ -5,13 +5,13 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../services/station_client.dart';
 import '../theme/app_colors.dart';
-import 'nfc_read_screen.dart';
-import 'nfc_write_screen.dart';
+import 'nfc_job_screen.dart';
 import 'scanner_screen.dart';
 
 /// Connected to a station. The PC reads a device and sends its SEQ + MAC; the
 /// operator scans that device's sticker, sees whether it matches, and confirms.
-/// NFC write requests from the station open the write screen automatically.
+/// NFC jobs from the station (write / verify the signed sticker) open the NFC screen
+/// automatically - the phone has no NFC buttons of its own.
 class SessionScreen extends StatefulWidget {
   const SessionScreen({super.key, required this.client});
 
@@ -24,19 +24,17 @@ class SessionScreen extends StatefulWidget {
 class _SessionScreenState extends State<SessionScreen> {
   QrData? _scanned;
   bool _sent = false;
-  bool _nfcOpen = false;
+  String? _openJobId; // NFC job whose screen is showing
+  NfcJob? _pendingJob; // job that arrived while another NFC screen was open
   VerifyRequest? _request; // request the current scan belongs to
-  NfcReadRequest? _pendingRead; // read request that arrived while another NFC screen was open
-  late final StreamSubscription<NfcWriteRequest> _nfcSub;
-  late final StreamSubscription<NfcReadRequest> _nfcReadSub;
+  late final StreamSubscription<NfcJob> _jobSub;
 
   StationClient get client => widget.client;
 
   @override
   void initState() {
     super.initState();
-    _nfcSub = client.nfcRequests.listen(_openNfcWrite);
-    _nfcReadSub = client.nfcReadRequests.listen(_openNfcRead);
+    _jobSub = client.nfcJobs.listen(_openNfcJob);
     _request = client.verifyRequest;
     client.addListener(_onClientChanged);
   }
@@ -44,30 +42,23 @@ class _SessionScreenState extends State<SessionScreen> {
   @override
   void dispose() {
     client.removeListener(_onClientChanged);
-    _nfcSub.cancel();
-    _nfcReadSub.cancel();
+    _jobSub.cancel();
     super.dispose();
   }
 
-  /// Tag read requested by the PC (Verification 1 read-back or Verification 2).
-  Future<void> _openNfcRead(NfcReadRequest request) async {
-    if (!mounted) return;
-    if (_nfcOpen) {
-      _pendingRead = request; // e.g. "Write + Verify": the write screen is still showing
+  /// NFC job started on the PC (Verification 1 write or Verification 2 verify).
+  Future<void> _openNfcJob(NfcJob job) async {
+    if (!mounted || job.jobId == _openJobId) return; // the PC resends a job after a reconnect
+    if (_openJobId != null) {
+      _pendingJob = job; // shown when the current NFC screen closes
       return;
     }
-    _nfcOpen = true;
-    await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => NfcReadScreen(client: client, request: request)),
-    );
-    _nfcOpen = false;
-    _openPendingRead();
-  }
-
-  void _openPendingRead() {
-    final next = _pendingRead;
-    _pendingRead = null;
-    if (next != null) _openNfcRead(next);
+    _openJobId = job.jobId;
+    await Navigator.of(context).push<bool>(MaterialPageRoute(builder: (_) => NfcJobScreen(client: client, job: job)));
+    _openJobId = null;
+    final next = _pendingJob;
+    _pendingJob = null;
+    if (next != null) _openNfcJob(next);
   }
 
   /// A new device from the PC starts a fresh sticker check.
@@ -78,22 +69,6 @@ class _SessionScreenState extends State<SessionScreen> {
       _scanned = null;
       _sent = false;
     });
-  }
-
-  Future<void> _openNfcWrite(NfcWriteRequest request) async {
-    if (_nfcOpen || !mounted) return;
-    _nfcOpen = true;
-    final written = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => NfcWriteScreen(client: client, request: request)),
-    );
-    _nfcOpen = false;
-    if (written == true && mounted) {
-      setState(() {
-        _scanned = null;
-        _sent = false;
-      });
-    }
-    _openPendingRead();
   }
 
   Future<void> _scan() async {

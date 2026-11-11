@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 /// A SyTrak Gen PC station found on the network.
 class Station {
@@ -79,35 +80,114 @@ class QrData {
   }
 }
 
-/// Station asks this phone to write an NFC tag.
-class NfcWriteRequest {
-  NfcWriteRequest({required this.seq, required this.mac, required this.data});
+/// cmd/nfc_job: the PC asks this phone to handle one tag (it decides everything else).
+class NfcJob {
+  NfcJob({required this.jobId, required this.mode, required this.mac, required this.seq});
 
-  final String seq;
+  final String jobId;
+
+  /// 'write' (Verification 1: write the signed sticker) or 'verify' (Verification 2: read only).
+  final String mode;
   final String mac;
-  final String data;
+  final String seq;
 
-  factory NfcWriteRequest.fromJson(Map<String, dynamic> json) => NfcWriteRequest(
-        seq: '${json['seq'] ?? ''}',
+  bool get isWrite => mode == 'write';
+  String get title => isWrite ? 'Verification 1 · write signed sticker' : 'Verification 2 · verify sticker';
+
+  factory NfcJob.fromJson(Map<String, dynamic> json) => NfcJob(
+        jobId: '${json['job_id'] ?? ''}',
+        mode: json['mode'] == 'write' ? 'write' : 'verify',
         mac: '${json['mac'] ?? ''}',
-        data: '${json['data'] ?? ''}',
+        seq: '${json['seq'] ?? ''}',
       );
 }
 
-/// Station asks this phone to read a tag and report its content (verification only).
-class NfcReadRequest {
-  NfcReadRequest({required this.seq, required this.mac, required this.expected});
+/// cmd/nfc_job_reply: what to write and the tag password - or why the tag was refused.
+/// [pwd] / [pack] live in memory only for this job and are wiped afterwards.
+class NfcJobReply {
+  NfcJobReply({required this.jobId, required this.ok, this.reason = '', this.writePage, this.writeData, this.pwd, this.pack, this.lock = false});
 
-  final String seq;
-  final String mac;
+  final String jobId;
+  final bool ok;
+  final String reason;
+  final int? writePage;
+  final Uint8List? writeData;
+  final Uint8List? pwd;
+  final Uint8List? pack;
 
-  /// Text the tag should contain (the MAC without colons).
-  final String expected;
+  /// Lock the tag after writing (AUTH0 = 02; reads stay open). Set by the PC (Settings › Lock tags).
+  final bool lock;
 
-  factory NfcReadRequest.fromJson(Map<String, dynamic> json) => NfcReadRequest(
-        seq: '${json['seq'] ?? ''}',
-        mac: '${json['mac'] ?? ''}',
-        expected: '${json['expected'] ?? json['mac'] ?? ''}',
+  static Uint8List? _hex(Object? text) {
+    final s = '${text ?? ''}';
+    if (s.isEmpty || s.length.isOdd || !RegExp(r'^[0-9A-Fa-f]+$').hasMatch(s)) return null;
+    return Uint8List.fromList([for (var i = 0; i < s.length; i += 2) int.parse(s.substring(i, i + 2), radix: 16)]);
+  }
+
+  factory NfcJobReply.fromJson(Map<String, dynamic> json) {
+    final write = json['write'];
+    return NfcJobReply(
+      jobId: '${json['job_id'] ?? ''}',
+      ok: json['ok'] == true,
+      reason: '${json['reason'] ?? ''}',
+      writePage: write is Map ? (write['page'] as num?)?.toInt() : null,
+      writeData: write is Map ? _hex(write['data']) : null,
+      pwd: _hex(json['pwd']),
+      pack: _hex(json['pack']),
+      lock: json['lock'] == true,
+    );
+  }
+
+  /// A usable reply: password present, and write data when the job writes.
+  String? problem(NfcJob job) {
+    if (!ok) return reason.isEmpty ? 'The PC refused the tag' : reason;
+    if (pwd?.length != 4 || pack?.length != 2) return 'The PC sent no valid tag password';
+    if (job.isWrite && (writePage == null || writeData == null || writeData!.isEmpty || writeData!.length % 4 != 0)) {
+      return 'The PC sent no data to write';
+    }
+    return null;
+  }
+
+  void wipe() {
+    pwd?.fillRange(0, pwd!.length, 0);
+    pack?.fillRange(0, pack!.length, 0);
+  }
+}
+
+class NfcCheck {
+  NfcCheck(this.title, this.state, this.detail);
+
+  final String title;
+
+  /// ok / fail / info / skip
+  final String state;
+  final String detail;
+}
+
+/// cmd/nfc_verdict: the PC's judgement of the tag, shown to the operator.
+class NfcVerdict {
+  NfcVerdict({required this.jobId, required this.ok, required this.headline, required this.uid, required this.checks,
+      required this.error, required this.sheet});
+
+  final String jobId;
+  final bool ok;
+  final String headline;
+  final String uid;
+  final List<NfcCheck> checks;
+  final String error;
+  final String sheet;
+
+  factory NfcVerdict.fromJson(Map<String, dynamic> json) => NfcVerdict(
+        jobId: '${json['job_id'] ?? ''}',
+        ok: json['ok'] == true,
+        headline: '${json['headline'] ?? ''}',
+        uid: '${json['uid'] ?? ''}',
+        checks: [
+          for (final c in (json['checks'] as List? ?? const []))
+            if (c is Map) NfcCheck('${c['title'] ?? ''}', '${c['state'] ?? ''}', '${c['detail'] ?? ''}'),
+        ],
+        error: '${json['error'] ?? ''}',
+        sheet: '${json['sheet'] ?? ''}',
       );
 }
 

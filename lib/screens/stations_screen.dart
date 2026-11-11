@@ -5,6 +5,7 @@ import '../services/discovery.dart';
 import '../services/identity.dart';
 import '../services/station_client.dart';
 import '../theme/app_colors.dart';
+import 'nfc_viewer_screen.dart';
 import 'session_screen.dart';
 
 /// Home: name this phone and connect to a SyTrak Gen station on the network.
@@ -128,6 +129,13 @@ class _StationsScreenState extends State<StationsScreen> {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
                 _PhoneHeader(name: widget.identity.name, id: widget.identity.id, onEdit: _editName),
+                const SizedBox(height: 14),
+                FilledButton.tonalIcon(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NfcViewerScreen())),
+                  icon: const Icon(Icons.contactless_rounded),
+                  label: const Text('NFC Data Viewer'),
+                  style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+                ),
                 const SizedBox(height: 28),
                 Text('Connect to a SyTrak Gen station', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),

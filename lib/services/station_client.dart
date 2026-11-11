@@ -28,12 +28,18 @@ class StationClient extends ChangeNotifier {
 
   /// PC's verdict on the last sticker sent.
   VerifyResult? verifyResult;
-  final _nfcRequests = StreamController<NfcWriteRequest>.broadcast();
-  final _nfcReadRequests = StreamController<NfcReadRequest>.broadcast();
 
-  Stream<NfcReadRequest> get nfcReadRequests => _nfcReadRequests.stream;
+  /// NFC jobs - always started by the PC (cmd/nfc_job); the phone only handles the tag.
+  final _nfcJobs = StreamController<NfcJob>.broadcast();
+  final _nfcVerdicts = StreamController<NfcVerdict>.broadcast();
+  final _nfcCancels = StreamController<String>.broadcast();
+  final _replyWaiters = <String, Completer<NfcJobReply>>{};
 
-  Stream<NfcWriteRequest> get nfcRequests => _nfcRequests.stream;
+  Stream<NfcJob> get nfcJobs => _nfcJobs.stream;
+  Stream<NfcVerdict> get nfcVerdicts => _nfcVerdicts.stream;
+
+  /// Job ids (with the reason after a '|') the PC cancelled.
+  Stream<String> get nfcCancels => _nfcCancels.stream;
   bool get isPaired => state == LinkState.paired;
 
   String _topic(String suffix) => 'sytrak/${station!.id}/mobile/$mobileId/$suffix';
@@ -147,12 +153,59 @@ class StationClient extends ChangeNotifier {
         case 'verify_result':
           verifyResult = VerifyResult.fromJson(data);
           notifyListeners();
-        case 'nfc_write':
-          _nfcRequests.add(NfcWriteRequest.fromJson(data));
-        case 'nfc_read':
-          _nfcReadRequests.add(NfcReadRequest.fromJson(data));
+        case 'nfc_job':
+          final job = NfcJob.fromJson(data);
+          if (job.jobId.isNotEmpty) _nfcJobs.add(job);
+        case 'nfc_job_reply':
+          final reply = NfcJobReply.fromJson(data);
+          final waiter = _replyWaiters.remove(reply.jobId);
+          if (waiter != null && !waiter.isCompleted) {
+            waiter.complete(reply);
+          } else {
+            reply.wipe(); // nobody is waiting (late resend answer)
+          }
+        case 'nfc_verdict':
+          _nfcVerdicts.add(NfcVerdict.fromJson(data));
+        case 'nfc_cancel':
+          _nfcCancels.add('${data['job_id'] ?? ''}|${data['reason'] ?? ''}');
       }
     }
+  }
+
+  /// evt/nfc_tag, then wait for cmd/nfc_job_reply. The same data is resent up to [attempts] times
+  /// (the PC answers a resend with the same reply). Null = no answer from the PC.
+  Future<NfcJobReply?> requestJobReply(String jobId, Map<String, Object> tag,
+      {int attempts = 3, Duration timeout = const Duration(seconds: 5)}) async {
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      final waiter = Completer<NfcJobReply>();
+      _replyWaiters[jobId] = waiter;
+      if (!_publish('evt/nfc_tag', jsonEncode({'job_id': jobId, 'attempt': attempt, ...tag}))) {
+        await Future<void>.delayed(const Duration(seconds: 1)); // reconnecting - try again
+        continue;
+      }
+      try {
+        return await waiter.future.timeout(timeout);
+      } on TimeoutException {
+        // resend
+      } finally {
+        _replyWaiters.remove(jobId);
+      }
+    }
+    return null;
+  }
+
+  void sendNfcProgress(String jobId, String step, bool ok, String detail) {
+    _publish('evt/nfc_progress', jsonEncode({'job_id': jobId, 'step': step, 'ok': ok, 'detail': detail}));
+  }
+
+  /// evt/nfc_done - retried for a while if the link is down, so the PC always gets the result.
+  Future<bool> sendNfcDone(String jobId, Map<String, Object> result) async {
+    final payload = jsonEncode({'job_id': jobId, ...result});
+    for (var i = 0; i < 10; i++) {
+      if (_publish('evt/nfc_done', payload)) return true;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    return false;
   }
 
   bool sendScan(String qr) {
@@ -161,16 +214,6 @@ class StationClient extends ChangeNotifier {
     verifyResult = null;
     notifyListeners();
     return _publish('evt/scan', jsonEncode({'qr': qr}));
-  }
-
-  /// Result of reading a tag for verification (no write).
-  void sendNfcReadResult({required bool ok, String text = '', String error = ''}) {
-    _publish('evt/nfc_read_result', jsonEncode({'ok': ok, 'text': text, 'error': error}));
-  }
-
-  /// [readBack] is the text read from the tag after writing (verification).
-  void sendNfcResult(String seq, {required bool ok, String error = '', String? readBack}) {
-    _publish('evt/nfc_result', jsonEncode({'seq': seq, 'ok': ok, 'error': error, 'read_back': ?readBack}));
   }
 
   bool _publish(String suffix, String payload, {bool retain = false}) {
@@ -188,8 +231,9 @@ class StationClient extends ChangeNotifier {
   @override
   void dispose() {
     disconnect();
-    _nfcRequests.close();
-    _nfcReadRequests.close();
+    _nfcJobs.close();
+    _nfcVerdicts.close();
+    _nfcCancels.close();
     super.dispose();
   }
 }

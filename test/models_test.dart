@@ -1,7 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nfc_manager/ndef_record.dart';
 import 'package:sytrak_mobile/models.dart';
-import 'package:sytrak_mobile/services/nfc_writer.dart';
 
 void main() {
   test('parses the MAC-only SyTrak QR', () {
@@ -27,9 +25,31 @@ void main() {
     expect(req.matches(QrData.parse('hello')), isFalse);
   });
 
-  test('NFC read request falls back to the MAC as expected text', () {
-    expect(NfcReadRequest.fromJson({'seq': '0001', 'mac': 'E9EBA0ED7C7C', 'expected': 'E9EBA0ED7C7C'}).expected, 'E9EBA0ED7C7C');
-    expect(NfcReadRequest.fromJson({'mac': 'E9EBA0ED7C7C'}).expected, 'E9EBA0ED7C7C');
+  test('NFC job and reply parsing', () {
+    final job = NfcJob.fromJson({'job_id': 'j-1', 'mode': 'write', 'mac': 'E9EBA0ED7C7C', 'seq': '0001'});
+    expect(job.isWrite, isTrue);
+    expect(NfcJob.fromJson({'job_id': 'j-2', 'mode': 'anything'}).isWrite, isFalse);
+
+    final reply = NfcJobReply.fromJson({
+      'job_id': 'j-1', 'ok': true, 'write': {'page': 4, 'data': '034F9101'}, 'pwd': 'A1B2C3D4', 'pack': '53B1', 'lock': false,
+    });
+    expect(reply.problem(job), isNull);
+    expect(reply.writeData, [0x03, 0x4F, 0x91, 0x01]);
+    reply.wipe();
+    expect(reply.pwd, [0, 0, 0, 0]);
+
+    expect(NfcJobReply.fromJson({'job_id': 'j-1', 'ok': false, 'reason': 'bad tag'}).problem(job), 'bad tag');
+    expect(NfcJobReply.fromJson({'job_id': 'j-1', 'ok': true, 'pwd': 'zz', 'pack': '53B1'}).problem(job), contains('password'));
+    expect(NfcJobReply.fromJson({'job_id': 'j-1', 'ok': true, 'pwd': 'A1B2C3D4', 'pack': '53B1'}).problem(job), contains('write'));
+  });
+
+  test('NFC verdict parsing', () {
+    final v = NfcVerdict.fromJson({
+      'job_id': 'j-1', 'ok': true, 'headline': 'STICKER VERIFIED', 'uid': '04C34DEA0B1390',
+      'checks': [{'title': 'Signature valid', 'state': 'ok', 'detail': 'key 1'}, 'junk'], 'sheet': 'Saved to sheet row 9',
+    });
+    expect(v.checks.single.title, 'Signature valid');
+    expect(v.sheet, 'Saved to sheet row 9');
   });
 
   test('parses a discovery beacon', () {
@@ -38,20 +58,5 @@ void main() {
     expect(s!.id, 'SG-PC1');
     expect(s.host, '192.168.1.5');
     expect(Station.fromBeacon('SYTRAK_DISCOVER', '1.2.3.4'), isNull);
-  });
-
-  test('NDEF text record layout', () {
-    final r = NfcWriter.textRecord('AB');
-    expect(r.type, [0x54]);
-    expect(r.payload, [2, 0x65, 0x6E, 0x41, 0x42]); // len("en"), "en", "AB"
-  });
-
-  test('read-back decodes the text record that was written', () {
-    final message = NdefMessage(records: [NfcWriter.textRecord('E9EBA0ED7C7C')]);
-    // Round-trip through the on-tag byte format, like a real read-back.
-    final decoded = NdefMessage.decode(message.encode());
-    expect(NfcWriter.readText(decoded), 'E9EBA0ED7C7C');
-    expect(NfcWriter.readText(null), isNull);
-    expect(NfcWriter.readText(const NdefMessage(records: [])), isNull);
   });
 }
